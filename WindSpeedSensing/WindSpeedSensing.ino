@@ -6,13 +6,15 @@
   read out wind speed sensor
   Eltako WS Windsensor
 
+  21 May 2017: added pin_reset to be able to reset the histogram data hardware wise
+
 */
 
 // histogram library downloaded from arduino playground
 //#include <histogram.h>
 #include <DueFlashStorage.h>
 
-const byte pin_led = 13;
+const byte pin_reset = 42;
 const byte pin_interrupt = 32;
 
 volatile long timestamps[8] = {0, 0, 0, 0, 0, 0, 0, 0};
@@ -22,27 +24,26 @@ volatile bool timestamp_newdata = false;
 // copy to avoid updates during processing
 volatile long timestamps_cp[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 volatile byte timestamps_index_cp = 0;
-
 int index_buffer = 0;
 long time_delta[3] = {0, 0, 0};
-long temporary;
-float sensor_rps;
-float v_wind_kph;
+
 
 int time_delay = 1000;
-bool first_run = false;
-
+bool first_run;
+int counter = 0;
 
 DueFlashStorage dueFlashStorage;
 
+// flash stuff
+// initialize flash struct
 struct histogram_flash {
   float hist_counter[19];
-  uint8_t hist_buckets[19] = {0, 2, 4, 6, 8, 10, 12, 14, 15, 16, 18, 20, 25, 30, 35, 40, 45, 50, 60};
-  float hist_total;
+  uint8_t hist_buckets[19];
+  float hist_total = 0;
 };
-
 histogram_flash Flash_histogram;
 
+uint8_t buckets[19] = {0, 2, 4, 6, 8, 10, 12, 14, 15, 16, 18, 20, 25, 30, 35, 40, 45, 50, 60};
 
 void setup() {
   //start serial connection
@@ -50,20 +51,61 @@ void setup() {
   pinMode(pin_interrupt, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(pin_interrupt), get_timestamp, RISING);
 
-  pinMode(pin_led, OUTPUT);
+  pinMode(pin_reset, INPUT_PULLUP); // pin to reset histogram
   first_run = false;
 
-  // write configuration struct to flash at adress 4
-  byte b2[sizeof(Flash_histogram)]; // create byte array to store the struct
-  memcpy(b2, &Flash_histogram, sizeof(Flash_histogram)); // copy the struct to the byte array
-  dueFlashStorage.write(4, b2, sizeof(Flash_histogram)); // write byte array to flash
+  counter = 0; // counter to enable writing to flash
 
+  // read histogram available in flash?
+  byte* b = dueFlashStorage.readAddress(4);
+  histogram_flash Flash_histogram_temp;
+  memcpy(&Flash_histogram_temp, b, sizeof(Flash_histogram_temp));
+
+  // check if flash data should be used for initialization
+  bool use_flash_data = true;
+  for (byte i = 0; i < 19; i++) {
+    if (abs(Flash_histogram_temp.hist_buckets[i] - buckets[i]) > 0.01) {
+      use_flash_data = false;
+    }
+  }
+
+  if (use_flash_data) {
+    memcpy(&Flash_histogram, b, sizeof(Flash_histogram_temp));
+  }
+  else {
+    Flash_histogram.hist_total = 0;
+
+    for (byte i = 0; i < 19; i++) {
+      Flash_histogram.hist_buckets[i] = buckets[i];
+      Flash_histogram.hist_counter[i] = 0;
+    }
+
+  }
 
 }
 
 void loop() {
+  long temporary;
+  float sensor_rps;
+  float v_wind_kph;
+    
+  //reset histogram?
+  bool hist_reset = !digitalRead(pin_reset);
+  
+  
+  if (hist_reset) {
+    Flash_histogram.hist_total = 0;
 
-  // copy timestamp buffers to avoid updates during processing
+    for (byte i = 0; i < 19; i++) {
+      Flash_histogram.hist_buckets[i] = buckets[i];
+      Flash_histogram.hist_counter[i] = 0;
+    }
+  }
+
+  Serial.println("pin reset");
+  Serial.println(hist_reset);
+
+  // copy timestamp buffers to avoid updates during data-processing
   timestamps_index = timestamps_index_cp;
   for ( byte i = 0 ; i < 8 ; i++ ) {
     timestamps[ i ] = timestamps_cp[ i ];
@@ -73,7 +115,7 @@ void loop() {
     // process data from circular buffer of eight timestamps long
     // two pulses per revolution are given by the windsensor
     // take median value from three delta_times
-    timestamp_newdata=false; // set false till new timestamps arrived
+    timestamp_newdata = false; // set false till new timestamps arrived
     for (byte i = 0; i < 3; i++) {
       index_buffer = timestamps_index - 2 * i;
       if (index_buffer < 0) {
@@ -111,19 +153,27 @@ void loop() {
       sensor_rps = 1000000 / (float)time_delta[1];
       v_wind_kph = 1.761 / (1 + sensor_rps) + 3.013 * sensor_rps;
 
-      Serial.println("wind speed:");
-      Serial.println(v_wind_kph);
-
-      // add windpseed to histogram
-      for  (byte i = 0; i < 19; i++) {
-        if (v_wind_kph >= Flash_histogram.hist_buckets[i]) {
-          Flash_histogram.hist_counter[i] = Flash_histogram.hist_counter[i] + 1;
-        }
-      }
-      Flash_histogram.hist_total = Flash_histogram.hist_total + 1;
-
     }
   }
+  else {
+    v_wind_kph = 0;
+  }
+
+
+
+
+  Serial.println("wind speed:");
+  Serial.println(v_wind_kph);
+
+  // add windpseed to histogram
+  for  (byte i = 0; i < 19; i++) {
+    if (v_wind_kph >= Flash_histogram.hist_buckets[i]) {
+      Flash_histogram.hist_counter[i] = Flash_histogram.hist_counter[i] + 1;
+    }
+  }
+  Flash_histogram.hist_total = Flash_histogram.hist_total + 1;
+
+
 
   for (byte i = 0; i < 19; i++) {
     Serial.println(Flash_histogram.hist_counter[i]);
@@ -131,8 +181,23 @@ void loop() {
 
   Serial.println("----");
 
+  // write every x minutes to flash
+  counter++;
+  if (counter == 600) {
+    // write configuration struct to flash at adress 4
+    byte b2[sizeof(Flash_histogram)]; // create byte array to store the struct
+    memcpy(b2, &Flash_histogram, sizeof(Flash_histogram)); // copy the struct to the byte array
+    dueFlashStorage.write(4, b2, sizeof(Flash_histogram)); // write byte array to flash
+    Serial.println("write to flash done");
+    counter = 0;
+  }
+
   delay(time_delay);
 }
+
+
+
+
 
 void get_timestamp() {
   timestamp_newdata = true;
