@@ -3,19 +3,20 @@
   creation date: 8 May 2017
   hardware: arduino due
 
-  read out wind speed sensor
-  Eltako WS Windsensor
+  description: read out wind speed sensor, Eltako WS Windsensor
+  two pulses per revolution are obtained from the sensor, timestamps of pulses are collected, processed and speed is added in a histogram
+  every x amount of time the histogram gets written to the flash. No eeprom available on due, flash is reset when reprogramming arduino (be aware!)
 
-  21 May 2017: added pin_reset to be able to reset the histogram data hardware wise
-
+  21 May 2017: added pin_reset to be able to reset the histogram data hardware wise (connecting gnd to pin_reset)
+  27 May 2017: bugfix histogram, added sleep modes to reduce power consumption
 */
 
-// histogram library downloaded from arduino playground
-//#include <histogram.h>
+
 #include <DueFlashStorage.h>
 
 const byte pin_reset = 42;
 const byte pin_interrupt = 32;
+const int ledPin = 13;
 
 volatile long timestamps[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 volatile byte timestamps_index = 0;
@@ -28,7 +29,7 @@ int index_buffer = 0;
 long time_delta[3] = {0, 0, 0};
 
 
-int time_delay = 1000;
+int time_delay = 10000; // "sample time"
 bool first_run;
 int counter = 0;
 
@@ -43,15 +44,38 @@ struct histogram_flash {
 };
 histogram_flash Flash_histogram;
 
-uint8_t buckets[19] = {0, 2, 4, 6, 8, 10, 12, 14, 15, 16, 18, 20, 25, 30, 35, 40, 45, 50, 60};
+// histogram windspeeds
+uint8_t buckets[19] = {0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 25, 30, 35, 40, 45, 50, 60, 200};
 
 void setup() {
+//  pmc_mck_set_prescaler(PMC_PCK_PRES_CLK_64);
+  pmc_disable_all_pck();
+  pmc_disable_periph_clk(17);  // USART0
+  pmc_disable_periph_clk(18);  // USART1
+  pmc_disable_periph_clk(19);  // USART2
+  pmc_disable_periph_clk(20);  // USART3 - using pins for GPIO
+  pmc_disable_periph_clk(21);  // HSMCI (SD/MMC ctrl, N/C)
+  pmc_disable_periph_clk(22);  // TWI/I2C bus 0 (i.MX6 controlling)
+  pmc_disable_periph_clk(23);  // TWI/I2C bus 1
+  pmc_disable_periph_clk(24);  // SPI0
+  pmc_disable_periph_clk(25);  // SPI1
+  pmc_disable_periph_clk(26);  // SSC (I2S digital audio, N/C)
+  pmc_disable_periph_clk(38);  // DAC ctrl                  // no big savings
+  pmc_disable_periph_clk(39);  // DMA ctrl
+
+  pmc_disable_periph_clk(41);  // random number generator
+  pmc_disable_periph_clk(42);  // ethernet MAC - N/C        // saves some mA - we never use this
+  pmc_disable_periph_clk(43);  // CAN controller 0          // saves some mA - we never use this
+  pmc_disable_periph_clk(44);  // CAN controller 1          // saves some mA - we never use this
+
+
   //start serial connection
   Serial.begin(9600);
   pinMode(pin_interrupt, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(pin_interrupt), get_timestamp, RISING);
 
   pinMode(pin_reset, INPUT_PULLUP); // pin to reset histogram
+  pinMode(ledPin, OUTPUT); // indicator to see things are running when in standalone mode
   first_run = false;
 
   counter = 0; // counter to enable writing to flash
@@ -84,15 +108,17 @@ void setup() {
 
 }
 
+
+
 void loop() {
   long temporary;
   float sensor_rps;
   float v_wind_kph;
-    
+
   //reset histogram?
   bool hist_reset = !digitalRead(pin_reset);
-  
-  
+
+
   if (hist_reset) {
     Flash_histogram.hist_total = 0;
 
@@ -166,9 +192,10 @@ void loop() {
   Serial.println(v_wind_kph);
 
   // add windpseed to histogram
-  for  (byte i = 0; i < 19; i++) {
+  for  (int i = 18; i >= 0; i--) {
     if (v_wind_kph >= Flash_histogram.hist_buckets[i]) {
       Flash_histogram.hist_counter[i] = Flash_histogram.hist_counter[i] + 1;
+      break;
     }
   }
   Flash_histogram.hist_total = Flash_histogram.hist_total + 1;
@@ -178,7 +205,7 @@ void loop() {
   for (byte i = 0; i < 19; i++) {
     Serial.println(Flash_histogram.hist_counter[i]);
   }
-
+  Serial.println(Flash_histogram.hist_total);
   Serial.println("----");
 
   // write every x minutes to flash
@@ -190,9 +217,15 @@ void loop() {
     dueFlashStorage.write(4, b2, sizeof(Flash_histogram)); // write byte array to flash
     Serial.println("write to flash done");
     counter = 0;
+    digitalWrite(ledPin, HIGH);
   }
 
-  delay(time_delay);
+  digitalWrite(ledPin, LOW);
+
+
+//  pmc_enable_backupmode();
+  delay(time_delay); // give time_delay time to capture new data
+  
 }
 
 
