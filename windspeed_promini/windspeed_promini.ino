@@ -10,6 +10,7 @@
 */
 
 #include <EEPROMex.h>
+#include <LowPower.h>
 
 
 const byte pin_reset = 5;
@@ -97,6 +98,19 @@ void setup()
 }
 
 void loop() {
+
+  delay(100); //extra time to finish serial communication
+  
+  // go into low power mode
+  detachInterrupt(digitalPinToInterrupt(pin_interrupt));
+  for ( byte i = 0 ; i < 10 ; i++ ) {
+  LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF);
+  }
+  timestamp_newdata = false;
+  attachInterrupt(digitalPinToInterrupt(pin_interrupt), get_timestamp, RISING);
+
+  delay(1000); // allow some time to get pulses in
+
   long temporary;
   float sensor_rps;
   float v_wind_kph;
@@ -198,7 +212,7 @@ void loop() {
 
   // write every x minutes to NVM
   counter++;
-  if (counter == 40) {
+  if (counter == 500) {
     EEPROM.writeBlock(address, Flash_histogram);
     Serial.println("write to flash done");
     counter = 0;
@@ -207,7 +221,8 @@ void loop() {
   }
   digitalWrite(ledPin, LOW);
 
-  delay(time_delay); // give time_delay time to capture new data
+
+  //  delay(time_delay); // give time_delay time to capture new data
 
 }
 
