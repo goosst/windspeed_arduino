@@ -12,8 +12,8 @@
 #include <EEPROMex.h>
 
 
-const byte pin_reset = 3;
-const byte pin_interrupt = 2;
+const byte pin_reset = 5;
+const byte pin_interrupt = 3;
 const int ledPin = 13;
 
 volatile long timestamps[8] = {0, 0, 0, 0, 0, 0, 0, 0};
@@ -27,7 +27,7 @@ int index_buffer = 0;
 long time_delta[3] = {0, 0, 0};
 
 
-int time_delay = 10000; // "sample time"
+int time_delay = 1000; // "sample time"
 bool first_run;
 int counter = 0;
 
@@ -50,9 +50,11 @@ int address = 0;
 void setup()
 {
   Serial.begin(9600);
+  delay(2000);
 
   pinMode(pin_interrupt, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(pin_interrupt), get_timestamp, RISING);
+  pinMode(pin_reset, INPUT_PULLUP); // pin to reset histogram
 
   counter = 0; // counter to enable writing to flash
 
@@ -85,6 +87,10 @@ void setup()
 
   }
 
+  // print data
+  for (byte i = 0; i < 19; i++) {
+    Serial.println(Flash_histogram.hist_counter[i]);
+  }
   Serial.println(Flash_histogram.hist_total);
   Serial.println("---------");
 
@@ -95,12 +101,33 @@ void loop() {
   float sensor_rps;
   float v_wind_kph;
 
+  //reset histogram?
+  bool hist_reset = !digitalRead(pin_reset);
+
+
+  if (hist_reset) {
+    Flash_histogram.hist_total = 0;
+
+    for (byte i = 0; i < 19; i++) {
+      Flash_histogram.hist_buckets[i] = buckets[i];
+      Flash_histogram.hist_counter[i] = 0;
+    }
+  }
+
+
+
   Flash_histogram.hist_total = Flash_histogram.hist_total + 1;
 
-  Serial.print(Flash_histogram.hist_total );
-  Serial.println();
+  //  Serial.print(Flash_histogram.hist_total );
+  //  Serial.println();
 
+  // copy timestamp buffers to avoid updates during data-processing
+  timestamps_index = timestamps_index_cp;
+  for ( byte i = 0 ; i < 8 ; i++ ) {
+    timestamps[ i ] = timestamps_cp[ i ];
+  }
 
+  Serial.println(timestamp_newdata);
   if (timestamp_newdata) {
     // process data from circular buffer of eight timestamps long
     // two pulses per revolution are given by the windsensor
@@ -112,7 +139,7 @@ void loop() {
         index_buffer = index_buffer + 8;
       }
       time_delta[i] = timestamps[index_buffer];
-      //    Serial.println(timestamps[index_buffer]);
+      //          Serial.println(timestamps[index_buffer]);
 
       index_buffer = timestamps_index - 2 * (i + 1);
       if (index_buffer < 0) {
@@ -159,8 +186,10 @@ void loop() {
   }
   Flash_histogram.hist_total = Flash_histogram.hist_total + 1;
 
-// print data
+  // print data
   for (byte i = 0; i < 19; i++) {
+    Serial.print(buckets[i]);
+    Serial.print(":");
     Serial.println(Flash_histogram.hist_counter[i]);
   }
   Serial.println(Flash_histogram.hist_total);
@@ -169,7 +198,7 @@ void loop() {
 
   // write every x minutes to NVM
   counter++;
-  if (counter == 2) {
+  if (counter == 40) {
     EEPROM.writeBlock(address, Flash_histogram);
     Serial.println("write to flash done");
     counter = 0;
@@ -191,4 +220,6 @@ void get_timestamp() {
   }
 
   timestamps_cp[timestamps_index_cp] = micros();
+  //  Serial.println("new timestamp");
+  //  Serial.println(timestamps_cp[timestamps_index_cp]);
 }
